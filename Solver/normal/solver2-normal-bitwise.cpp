@@ -1,5 +1,6 @@
 #include <iostream>
 #include <vector>
+#include "nqueens.h"
 
 using namespace std;
 
