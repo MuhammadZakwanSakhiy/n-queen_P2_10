@@ -1,4 +1,3 @@
-#include <algorithm>
 #include <utility>
 #include <vector>
 #include "nqueens.h"
@@ -9,118 +8,94 @@ class PreplacedBitwiseSolver {
 public:
     int n;
     unsigned int full;
-    unsigned int allowed[16];
-    int nextFree[16];
-    int stepShift[16];
-    int position[16];
-    int firstFree;
-    int lastFree;
-    int lastForced;
+    int numFree;
+    int freeRows[12];
+    int s1Arr[12];
+    int s2Arr[12];
+    unsigned int allowed[12];
+    int position[12];
     vector<vector<int>> answers;
-    bool flipped;
     bool valid;
     bool isEmpty;
 
     PreplacedBitwiseSolver(int size, const vector<pair<int, int>>& queens)
-        : n(size), firstFree(-1), lastFree(-1), lastForced(-1),
-          flipped(false), valid(true), isEmpty(queens.empty()) {
+        : n(size), numFree(0), valid(true), isEmpty(queens.empty()) {
         full = (1u << n) - 1u;
         if (isEmpty) return;
 
-        int forcedCol[16];
-        for (int r = 0; r < n; ++r) forcedCol[r] = -1;
-
         // 1. Validate coordinates and detect conflicts among preplaced queens
         unsigned int usedCols = 0, usedD1 = 0, usedD2 = 0;
+        unsigned int forcedRowMask = 0;
+
         for (const auto& q : queens) {
             int row = q.first, col = q.second;
             if ((unsigned int)row >= (unsigned int)n || (unsigned int)col >= (unsigned int)n) {
                 valid = false;
                 return;
             }
-            if (forcedCol[row] != -1) {
-                if (forcedCol[row] != col) {
+            unsigned int rowBit = 1u << row;
+            if (forcedRowMask & rowBit) {
+                if (position[row] != col) {
                     valid = false;
                     return;
                 }
                 continue; // duplicate coordinate
             }
-
             unsigned int colBit = 1u << col;
-            unsigned int d1Bit = 1u << (row - col + n - 1);
-            unsigned int d2Bit = 1u << (row + col);
+            unsigned int d1Bit = colBit << (n - 1 - row);
+            unsigned int d2Bit = colBit << row;
             if ((usedCols & colBit) || (usedD1 & d1Bit) || (usedD2 & d2Bit)) {
                 valid = false;
                 return;
             }
-
+            forcedRowMask |= rowBit;
             usedCols |= colBit;
             usedD1 |= d1Bit;
             usedD2 |= d2Bit;
-            forcedCol[row] = col;
+            position[row] = col;
         }
 
-        // 2. Flip board vertically if forced queens sit closer to the bottom edge,
-        //    so tighter constraints prune at the top of the search tree.
-        int topScore = 0, botScore = 0;
+        // 2. Collect free rows and precompute valid column masks against preplaced queens
+        int popc[12];
         for (int r = 0; r < n; ++r) {
-            if (forcedCol[r] != -1) {
-                topScore += r;
-                botScore += (n - 1 - r);
+            if (forcedRowMask & (1u << r)) continue;
+            unsigned int av = full & ~(usedCols | (usedD1 >> (n - 1 - r)) | (usedD2 >> r));
+            if (!av) {
+                valid = false;
+                return;
             }
-        }
-        flipped = (botScore < topScore);
-        if (flipped) {
-            for (int l = 0, r = n - 1; l < r; ++l, --r) {
-                int tmp = forcedCol[l];
-                forcedCol[l] = forcedCol[r];
-                forcedCol[r] = tmp;
-            }
+            freeRows[numFree] = r;
+            allowed[numFree] = av;
+            popc[numFree] = __builtin_popcount(av);
+            ++numFree;
         }
 
-        int numFree = 0;
-        for (int r = 0; r < n; ++r) {
-            if (forcedCol[r] != -1) {
-                position[r] = forcedCol[r];
-                lastForced = r;
-            } else {
-                if (firstFree == -1) firstFree = r;
-                lastFree = r;
-                ++numFree;
-            }
-            allowed[r] = full & ~usedCols;
-        }
-
-        // 3. Precompute static diagonal masks from preplaced queens into allowed[r]
-        for (int pr = 0; pr < n; ++pr) {
-            int pc = forcedCol[pr];
-            if (pc == -1) continue;
-            unsigned int bit = 1u << pc;
-            for (int r = 0; r < n; ++r) {
-                if (r == pr) continue;
-                int d = r > pr ? r - pr : pr - r;
-                allowed[r] &= ~((bit << d) | (bit >> d));
-            }
-        }
-
-        // 4. Static forward check + build jump table over forced rows
-        int prev = -1;
-        for (int r = 0; r < n; ++r) {
-            if (forcedCol[r] == -1) {
-                if (allowed[r] == 0) {
-                    valid = false;
-                    return;
+        // 3. Static MRV + adjacency tie-breaking: place most constrained rows first,
+        //    preferring rows adjacent to already chosen/preplaced rows to maximize diagonal pruning.
+        unsigned int chosenMask = forcedRowMask;
+        for (int i = 0; i < numFree; ++i) {
+            int best = i;
+            int bestScore = 100000;
+            for (int j = i; j < numFree; ++j) {
+                int r = freeRows[j];
+                int adj = 0;
+                if (r > 0 && (chosenMask & (1u << (r - 1)))) ++adj;
+                if (r + 1 < n && (chosenMask & (1u << (r + 1)))) ++adj;
+                int score = (popc[j] << 4) - (adj << 2);
+                if (score < bestScore) {
+                    bestScore = score;
+                    best = j;
                 }
-                if (prev != -1) {
-                    nextFree[prev] = r;
-                    stepShift[prev] = r - prev;
-                }
-                prev = r;
             }
+            if (best != i) {
+                swap(freeRows[i], freeRows[best]);
+                swap(allowed[i], allowed[best]);
+                swap(popc[i], popc[best]);
+            }
+            chosenMask |= (1u << freeRows[i]);
+            s1Arr[i] = n - 1 - freeRows[i];
+            s2Arr[i] = freeRows[i];
         }
-
-        if (numFree >= 8) answers.reserve(64);
-        else if (n >= 9 && numFree >= 6) answers.reserve(16);
     }
 
     // Mirror-symmetry search when no queens are preplaced
@@ -146,50 +121,24 @@ public:
         }
     }
 
-    // Pure consecutive-row DFS once past the last preplaced queen (constant 1-bit shifts)
-    void dfsPure(int row, unsigned int cols, unsigned int dl, unsigned int dr) {
-        unsigned int av = allowed[row] & ~(cols | dl | dr);
-        if (row == lastFree) {
-            if (av) {
-                position[row] = __builtin_ctz(av);
+    // Arbitrary-order bitwise DFS over free rows only
+    void dfs(int idx, unsigned int cols, unsigned int d1, unsigned int d2) {
+        int r = freeRows[idx];
+        unsigned int avail = allowed[idx] & ~(cols | (d1 >> s1Arr[idx]) | (d2 >> s2Arr[idx]));
+        if (idx == numFree - 1) {
+            if (avail) {
+                position[r] = __builtin_ctz(avail);
                 answers.emplace_back(position, position + n);
             }
             return;
         }
-        while (av) {
-            unsigned int bit = av & (0u - av);
-            av -= bit;
-            position[row] = __builtin_ctz(bit);
-            dfsPure(row + 1, cols | bit, (dl | bit) << 1, (dr | bit) >> 1);
-        }
-    }
-
-    // Jump-table DFS while preplaced rows remain ahead; transitions to dfsPure once past lastForced
-    void dfsJump(int row, unsigned int cols, unsigned int dl, unsigned int dr) {
-        unsigned int av = allowed[row] & ~(cols | dl | dr);
-        if (row == lastFree) {
-            if (av) {
-                position[row] = __builtin_ctz(av);
-                answers.emplace_back(position, position + n);
-            }
-            return;
-        }
-        int nr = nextFree[row];
-        int sh = stepShift[row];
-        if (nr > lastForced) {
-            while (av) {
-                unsigned int bit = av & (0u - av);
-                av -= bit;
-                position[row] = __builtin_ctz(bit);
-                dfsPure(nr, cols | bit, (dl | bit) << sh, (dr | bit) >> sh);
-            }
-        } else {
-            while (av) {
-                unsigned int bit = av & (0u - av);
-                av -= bit;
-                position[row] = __builtin_ctz(bit);
-                dfsJump(nr, cols | bit, (dl | bit) << sh, (dr | bit) >> sh);
-            }
+        int s1 = s1Arr[idx];
+        int s2 = s2Arr[idx];
+        while (avail) {
+            unsigned int bit = avail & (0u - avail);
+            avail -= bit;
+            position[r] = __builtin_ctz(bit);
+            dfs(idx + 1, cols | bit, d1 | (bit << s1), d2 | (bit << s2));
         }
     }
 
@@ -200,7 +149,6 @@ public:
                 answers.push_back({0});
                 return move(answers);
             }
-            if (n >= 8) answers.reserve(64);
             for (int c = 0; c < n / 2; ++c) {
                 unsigned int bit = 1u << c;
                 position[0] = c;
@@ -213,20 +161,11 @@ public:
             }
             return move(answers);
         }
-
-        if (firstFree == -1) {
+        if (numFree == 0) {
             answers.emplace_back(position, position + n);
-        } else if (firstFree > lastForced) {
-            dfsPure(firstFree, 0, 0, 0);
-        } else {
-            dfsJump(firstFree, 0, 0, 0);
+            return move(answers);
         }
-
-        if (flipped) {
-            for (auto& sol : answers) {
-                reverse(sol.begin(), sol.end());
-            }
-        }
+        dfs(0, 0, 0, 0);
         return move(answers);
     }
 };
